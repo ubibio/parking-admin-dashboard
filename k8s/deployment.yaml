@@ -19,18 +19,25 @@ spec:
           image: 192.168.45.91:31114/parking-admin-dashboard:7
           ports:
             - containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 20
           readinessProbe:
             httpGet:
               path: /
               port: 8080
-            initialDelaySeconds: 90
+            initialDelaySeconds: 0
             periodSeconds: 10
             failureThreshold: 5
           livenessProbe:
             httpGet:
               path: /
               port: 8080
-            initialDelaySeconds: 120
+            initialDelaySeconds: 0
             periodSeconds: 15
             failureThreshold: 5
 ---
