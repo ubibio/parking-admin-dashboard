@@ -43,7 +43,7 @@ pipeline {
                         git remote set-url origin https://\${GIT_USER}:\${GIT_TOKEN}@github.com/ubibio/parking-admin-dashboard.git
                         git add k8s/deployment.yaml
                         git diff --cached --quiet || git commit -m "ci: update image tag to ${TAG}"
-                        git pull --rebase origin main
+                        git pull --rebase --autostash origin main
                         git push origin HEAD:main
                     """
                 }
