@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>메인 대시보드 - 주차관리 대시보드</title>
+    <meta name="_csrf" th:content="${_csrf.token}"/>
+    <meta name="_csrf_header" th:content="${_csrf.headerName}"/>
+    <th:block th:replace="~{fragments/layout :: styles}"></th:block>
+    <style>
+        .kpi-card { border: 0; border-radius: .5rem; box-shadow: 0 .125rem .5rem rgba(0,0,0,.06); }
+        .kpi-card .kpi-label { font-size: .85rem; color: #6c757d; }
+        .kpi-card .kpi-value { font-size: 1.6rem; font-weight: 700; }
+        .kpi-card.kpi-warn { background-color: #fff3cd; }
+        .kpi-card.kpi-warn .kpi-value { color: #b45309; }
+        .kpi-card.kpi-full { background-color: #f8d7da; }
+        .kpi-card.kpi-full .kpi-value { color: #b02a37; }
+        .gate-card { border: 0; border-radius: .5rem; box-shadow: 0 .125rem .5rem rgba(0,0,0,.06); }
+        .gate-card .gate-title { font-weight: 700; }
+        .gate-status-row { font-size: .9rem; }
+        #alertBar { display: none; }
+        #eventLogTable tbody tr.event-warning { background-color: #f8d7da; }
+        #eventLogTable { font-size: .875rem; }
+        #trafficChartWrap { position: relative; height: 260px; }
+        @media (min-width: 1024px) {
+            .kpi-value { font-size: 1.8rem; }
+        }
+    </style>
+</head>
+<body>
+<nav th:replace="~{fragments/layout :: topbar(activeMenu='dashboard')}"></nav>
+
+<!--
+    TODO(frontend-expert, 6-1 화면 마크업 담당): 아래는 backend-expert가 만든 placeholder다.
+    KPI 카드 4종 / 게이트 카드 목록 / 실시간 이벤트 로그 테이블 / 시간대별 트래픽 차트 / 상단 알림 바는
+    frontend-expert가 #dashboardRoot 내부에 구현한다.
+
+    조회 API: GET /api/dashboard/{kpi|gates|events?limit=20|traffic?date=YYYY-MM-DD}
+    명령 API(SUPER_ADMIN 전용, 사유 팝업 후 호출):
+      POST /api/dashboard/gates/{gateId}/barrier/open   { reasonCode, reasonText }
+      POST /api/dashboard/gates/{gateId}/lpr/reboot
+      POST /api/dashboard/gates/{gateId}/intercom/call
+      POST /api/dashboard/gates/{gateId}/manual-payment { recordId, amount, reasonCode, reasonText }
+    WebSocket(STOMP): 연결 엔드포인트 /ws/dashboard(SockJS)
+      구독 토픽: /topic/dashboard/kpi, /topic/dashboard/gates, /topic/dashboard/events, /topic/dashboard/alerts
+      (푸시 페이로드는 위 조회 API 응답과 동일 스키마)
+
+    초기 게이트 목록은 서버 모델 속성 "gates"(List<GateStatusResponse>)로 이미 주입되어 있다.
+-->
+<main class="container-fluid px-3 px-md-4 py-4" id="dashboardRoot"
+      th:attr="data-initial-gate-count=${gates.size()}">
+
+    <!-- 상단 알림 바 (이상 감지: 미인식 차량, 차단기 장시간 열림, 정산기 용지 부족 등) -->
+    <div id="alertBar" class="alert alert-danger d-flex align-items-center justify-content-between mb-3" role="alert">
+        <span id="alertBarMessage"></span>
+        <button type="button" class="btn-close" id="alertBarClose" aria-label="닫기"></button>
+    </div>
+
+    <!-- KPI 카드 4종 -->
+    <section class="mb-4">
+        <h6 class="text-muted mb-2">주차장 현황 요약 (KPI)</h6>
+        <div class="row row-cols-1 row-cols-md-2 row-cols-lg-4 g-3">
+            <div class="col">
+                <div class="card kpi-card h-100">
+                    <div class="card-body">
+                        <div class="kpi-label">총 주차면수</div>
+                        <div class="kpi-value" id="kpiTotalSpace">-</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card kpi-card h-100" id="kpiOccupancyCard">
+                    <div class="card-body">
+                        <div class="kpi-label">현재 주차 차량</div>
+                        <div class="kpi-value"><span id="kpiOccupiedCount">-</span> 대 (<span id="kpiOccupancyRate">-</span>%)</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card kpi-card h-100">
+                    <div class="card-body">
+                        <div class="kpi-label">금일 입차 / 출차</div>
+                        <div class="kpi-value"><span id="kpiEntryCount">-</span> / <span id="kpiExitCount">-</span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card kpi-card h-100">
+                    <div class="card-body">
+                        <div class="kpi-label">금일 총 매출액</div>
+                        <div class="kpi-value"><span id="kpiRevenue">-</span> 원</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 실시간 게이트 제어 & 장비 상태 Monitor -->
+    <section class="mb-4">
+        <h6 class="text-muted mb-2">실시간 게이트 제어 & 장비 상태 Monitor</h6>
+        <div class="row row-cols-1 row-cols-lg-2 g-3" id="gateCardList">
+            <div class="col" th:each="gate : ${gates}" th:id="'gateCol-' + ${gate.gateId}">
+                <div class="card gate-card h-100" th:id="'gateCard-' + ${gate.gateId}" th:attr="data-gate-id=${gate.gateId}">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <span class="gate-title" th:text="'[Gate #' + ${gate.gateId} + '] ' + ${gate.gateName}">게이트</span>
+                            <span class="badge" data-role="barrier-badge" th:text="${gate.barrierStatus}">-</span>
+                        </div>
+                        <div class="gate-status-row text-muted">차단기: <span data-role="barrier-status" th:text="${gate.barrierStatus}">-</span></div>
+                        <div class="gate-status-row text-muted">카메라(LPR): <span data-role="lpr-status" th:text="${gate.lprStatus}">-</span></div>
+                        <div class="gate-status-row text-muted" data-role="pay-station-row"
+                             th:style="${gate.payStationStatus == null} ? 'display:none' : ''">
+                            정산기: <span data-role="pay-station-status" th:text="${gate.payStationType} + ' / ' + ${gate.payStationStatus}">-</span>
+                        </div>
+                        <div class="gate-status-row text-muted mb-2">
+                            최근: <span data-role="last-vehicle" th:text="${gate.lastVehicleNo != null ? gate.lastVehicleNo : '미인식*'}">-</span>
+                            (<span data-role="last-event-at" th:text="${gate.lastEventAt != null ? #temporals.format(gate.lastEventAt, 'HH:mm:ss') : '-'}">-</span>)
+                        </div>
+                        <div class="btn-group btn-group-sm flex-wrap" role="group">
+                            <button type="button" class="btn btn-outline-danger btn-barrier-open" th:attr="data-gate-id=${gate.gateId}">차단기 강제열림</button>
+                            <button type="button" class="btn btn-outline-secondary btn-lpr-reboot"
+                                    th:if="${gate.gateType == 'ENTRY'}" th:attr="data-gate-id=${gate.gateId}">LPR 재부팅</button>
+                            <button type="button" class="btn btn-outline-secondary btn-manual-payment"
+                                    th:if="${gate.gateType == 'EXIT'}" th:attr="data-gate-id=${gate.gateId}">요금수동수납</button>
+                            <button type="button" class="btn btn-outline-secondary btn-intercom-call" th:attr="data-gate-id=${gate.gateId}">통화</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 실시간 입/출차 이벤트 로그 & 시간대별 트래픽 차트 -->
+    <section class="row g-3">
+        <div class="col-12 col-lg-7">
+            <h6 class="text-muted mb-2">실시간 입/출차 이벤트 로그</h6>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle" id="eventLogTable">
+                    <thead>
+                    <tr>
+                        <th>시간</th>
+                        <th>게이트</th>
+                        <th>차량번호</th>
+                        <th>구분</th>
+                        <th>상태</th>
+                        <th>비고</th>
+                    </tr>
+                    </thead>
+                    <tbody id="eventLogTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="col-12 col-lg-5">
+            <h6 class="text-muted mb-2">시간대별 입/출차 추이 차트</h6>
+            <div id="trafficChartWrap">
+                <canvas id="trafficChart"></canvas>
+            </div>
+        </div>
+    </section>
+
+    <!-- 차단기 강제열림 사유 입력 모달 -->
+    <div class="modal fade" id="barrierOpenModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form id="barrierOpenForm">
+                    <div class="modal-header">
+                        <h5 class="modal-title">차단기 강제열림 - 사유 입력</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="barrierOpenGateId">
+                        <div class="mb-3">
+                            <label for="barrierOpenReasonCode" class="form-label">사유 선택</label>
+                            <select class="form-select" id="barrierOpenReasonCode" required>
+                                <option value="">선택하세요</option>
+                                <option value="EMERGENCY">비상 상황</option>
+                                <option value="EQUIPMENT_FAULT">장비 고장</option>
+                                <option value="MANUAL_PASS">수동 통과 처리</option>
+                                <option value="OTHER">기타</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="barrierOpenReasonText" class="form-label">상세 사유</label>
+                            <textarea class="form-control" id="barrierOpenReasonText" rows="2" required></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                        <button type="submit" class="btn btn-danger">강제열림 실행</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 요금 수동수납 모달 -->
+    <div class="modal fade" id="manualPaymentModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form id="manualPaymentForm">
+                    <div class="modal-header">
+                        <h5 class="modal-title">요금 수동수납</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="manualPaymentGateId">
+                        <div class="mb-3">
+                            <label for="manualPaymentRecordId" class="form-label">입출차 기록 번호(recordId)</label>
+                            <input type="number" class="form-control" id="manualPaymentRecordId" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="manualPaymentAmount" class="form-label">수납 금액</label>
+                            <input type="number" class="form-control" id="manualPaymentAmount" min="0" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="manualPaymentReasonCode" class="form-label">사유 선택</label>
+                            <select class="form-select" id="manualPaymentReasonCode" required>
+                                <option value="">선택하세요</option>
+                                <option value="PAY_STATION_FAULT">정산기 장애</option>
+                                <option value="DISPUTE_ADJUST">요금 분쟁 조정</option>
+                                <option value="ROUND_TRIP">회차 인정</option>
+                                <option value="OTHER">기타</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="manualPaymentReasonText" class="form-label">상세 사유</label>
+                            <textarea class="form-control" id="manualPaymentReasonText" rows="2" required></textarea>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">취소</button>
+                        <button type="submit" class="btn btn-primary">수납 처리</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 처리 결과 토스트 -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1080">
+        <div id="commandToast" class="toast align-items-center text-white border-0" role="alert">
+            <div class="d-flex">
+                <div class="toast-body" id="commandToastBody"></div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="닫기"></button>
+            </div>
+        </div>
+    </div>
+</main>
+
+<th:block th:replace="~{fragments/layout :: scripts}"></th:block>
+<script src="https://cdn.jsdelivr.net/npm/sockjs-client@1.6.1/dist/sockjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+$(function () {
+    'use strict';
+
+    var csrfHeader = $('meta[name="_csrf_header"]').attr('content');
+    var csrfToken = $('meta[name="_csrf"]').attr('content');
+    var EVENT_LOG_LIMIT = 20;
+
+    function ajaxHeaders() {
+        var headers = {};
+        if (csrfToken && csrfHeader) {
+            headers[csrfHeader] = csrfToken;
+        }
+        return headers;
+    }
+
+    function numberFormat(n) {
+        if (n === null || n === undefined) { return '-'; }
+        return Number(n).toLocaleString('ko-KR');
+    }
+
+    function formatTime(iso) {
+        if (!iso) { return '-'; }
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) { return iso; }
+        var hh = String(d.getHours()).padStart(2, '0');
+        var mm = String(d.getMinutes()).padStart(2, '0');
+        var ss = String(d.getSeconds()).padStart(2, '0');
+        return hh + ':' + mm + ':' + ss;
+    }
+
+    function todayIso() {
+        var d = new Date();
+        var mm = String(d.getMonth() + 1).padStart(2, '0');
+        var dd = String(d.getDate()).padStart(2, '0');
+        return d.getFullYear() + '-' + mm + '-' + dd;
+    }
+
+    function showToast(message, isError) {
+        var $toast = $('#commandToast');
+        $toast.removeClass('bg-success bg-danger').addClass(isError ? 'bg-danger' : 'bg-success');
+        $('#commandToastBody').text(message);
+        var toast = bootstrap.Toast.getOrCreateInstance($toast[0], { delay: 3500 });
+        toast.show();
+    }
+
+    // ----- KPI -----
+    function renderKpi(kpi) {
+        $('#kpiTotalSpace').text(numberFormat(kpi.totalSpaceCount));
+        $('#kpiOccupiedCount').text(numberFormat(kpi.occupiedCount));
+        $('#kpiOccupancyRate').text(Number(kpi.occupancyRate).toFixed(1));
+        $('#kpiEntryCount').text(numberFormat(kpi.todayEntryCount));
+        $('#kpiExitCount').text(numberFormat(kpi.todayExitCount));
+        $('#kpiRevenue').text(numberFormat(kpi.todayRevenueAmount));
+
+        var $card = $('#kpiOccupancyCard');
+        $card.removeClass('kpi-warn kpi-full');
+        if (kpi.occupancyLevel === 'FULL') {
+            $card.addClass('kpi-full');
+        } else if (kpi.occupancyLevel === 'WARN') {
+            $card.addClass('kpi-warn');
+        }
+    }
+
+    function loadKpi() {
+        $.getJSON('/api/dashboard/kpi', renderKpi);
+    }
+
+    // ----- 게이트 카드 -----
+    var barrierLabel = { OPEN: '열림', CLOSED: '닫힘', FAULT: '고장' };
+    var lprLabel = { NORMAL: '정상', COMM_ERROR: '통신 이상' };
+    var payStatusLabel = { NORMAL: '정상', COMM_ERROR: '통신 이상', PAPER_LOW: '용지 부족' };
+
+    function badgeClassForBarrier(status) {
+        if (status === 'FAULT') { return 'bg-danger'; }
+        if (status === 'OPEN') { return 'bg-warning text-dark'; }
+        return 'bg-secondary';
+    }
+
+    function updateGateCard(gate) {
+        var $card = $('#gateCard-' + gate.gateId);
+        if ($card.length === 0) {
+            // 브리프 스코프상 신규 게이트 카드 추가 UI는 없음(초기 목록 기준). 알 수 없는 gateId는 무시.
+            return;
+        }
+        $card.find('[data-role="barrier-status"]').text(barrierLabel[gate.barrierStatus] || gate.barrierStatus);
+        $card.find('[data-role="barrier-badge"]').text(gate.barrierStatus)
+            .removeClass('bg-secondary bg-warning bg-danger text-dark')
+            .addClass(badgeClassForBarrier(gate.barrierStatus));
+        $card.find('[data-role="lpr-status"]').text(lprLabel[gate.lprStatus] || gate.lprStatus);
+
+        var $payRow = $card.find('[data-role="pay-station-row"]');
+        if (gate.payStationStatus) {
+            $payRow.show().find('[data-role="pay-station-status"]')
+                .text((gate.payStationType || '') + ' / ' + (payStatusLabel[gate.payStationStatus] || gate.payStationStatus));
+        } else {
+            $payRow.hide();
+        }
+
+        $card.find('[data-role="last-vehicle"]').text(gate.lastVehicleNo ? gate.lastVehicleNo : '미인식*');
+        $card.find('[data-role="last-event-at"]').text(formatTime(gate.lastEventAt));
+    }
+
+    function loadGates() {
+        $.getJSON('/api/dashboard/gates', function (gates) {
+            gates.forEach(updateGateCard);
+        });
+    }
+
+    // ----- 이벤트 로그 -----
+    var entryTypeLabel = { GENERAL: '일반', SEASON_PASS: '정기' };
+    var eventStatusLabel = { NORMAL: '정상', SETTLED: '정산', PASS: 'Pass', WARNING: '경고' };
+
+    function eventRowHtml(evt) {
+        var isWarning = evt.eventStatus === 'WARNING';
+        var $tr = $('<tr></tr>').addClass(isWarning ? 'event-warning' : '');
+        $tr.append($('<td></td>').text(formatTime(evt.occurredAt)));
+        $tr.append($('<td></td>').text(evt.gateName || '-'));
+        $tr.append($('<td></td>').text(evt.vehicleNo ? evt.vehicleNo : '미인식*'));
+        $tr.append($('<td></td>').text(entryTypeLabel[evt.entryType] || evt.entryType || '-'));
+        $tr.append($('<td></td>').text(eventStatusLabel[evt.eventStatus] || evt.eventStatus || '-'));
+        $tr.append($('<td></td>').text(evt.note || '-'));
+        return $tr;
+    }
+
+    function prependEvent(evt) {
+        var $tbody = $('#eventLogTableBody');
+        $tbody.prepend(eventRowHtml(evt));
+        $tbody.find('tr').slice(EVENT_LOG_LIMIT).remove();
+    }
+
+    function loadEvents() {
+        $.getJSON('/api/dashboard/events', { limit: EVENT_LOG_LIMIT }, function (events) {
+            var $tbody = $('#eventLogTableBody');
+            $tbody.empty();
+            events.forEach(function (evt) {
+                $tbody.append(eventRowHtml(evt));
+            });
+        });
+    }
+
+    // ----- 트래픽 차트 -----
+    var trafficChart = null;
+
+    function loadTraffic() {
+        $.getJSON('/api/dashboard/traffic', { date: todayIso() }, function (rows) {
+            var byHour = {};
+            rows.forEach(function (r) { byHour[r.hour] = r; });
+            var labels = [];
+            var entryData = [];
+            var exitData = [];
+            for (var h = 0; h < 24; h++) {
+                labels.push(h + '시');
+                entryData.push(byHour[h] ? byHour[h].entryCount : 0);
+                exitData.push(byHour[h] ? byHour[h].exitCount : 0);
+            }
+            var ctx = document.getElementById('trafficChart').getContext('2d');
+            if (trafficChart) {
+                trafficChart.data.labels = labels;
+                trafficChart.data.datasets[0].data = entryData;
+                trafficChart.data.datasets[1].data = exitData;
+                trafficChart.update();
+                return;
+            }
+            trafficChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: '입차', data: entryData, backgroundColor: '#0d6efd' },
+                        { label: '출차', data: exitData, backgroundColor: '#adb5bd' }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { beginAtZero: true } }
+                }
+            });
+        });
+    }
+
+    // ----- 알림 바 -----
+    function beep() {
+        try {
+            var AudioCtx = window.AudioContext || window.webkitAudioContext;
+            var ctx = new AudioCtx();
+            var osc = ctx.createOscillator();
+            var gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.value = 880;
+            gain.gain.value = 0.1;
+            osc.connect(gain).connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.25);
+        } catch (e) {
+            // 오디오 미지원 브라우저는 무시(진행 방해 금지)
+        }
+    }
+
+    function showAlert(payload) {
+        $('#alertBarMessage').text('[' + formatTime(payload.occurredAt) + '] ' + payload.message);
+        $('#alertBar').stop(true, true).show();
+        beep();
+    }
+
+    $('#alertBarClose').on('click', function () {
+        $('#alertBar').hide();
+    });
+
+    // ----- 게이트 명령 AJAX -----
+    $(document).on('click', '.btn-barrier-open', function () {
+        $('#barrierOpenGateId').val($(this).data('gate-id'));
+        $('#barrierOpenForm')[0].reset();
+        bootstrap.Modal.getOrCreateInstance('#barrierOpenModal').show();
+    });
+
+    $('#barrierOpenForm').on('submit', function (e) {
+        e.preventDefault();
+        var gateId = $('#barrierOpenGateId').val();
+        var $btn = $(this).find('button[type="submit"]').prop('disabled', true);
+        $.ajax({
+            url: '/api/dashboard/gates/' + gateId + '/barrier/open',
+            type: 'POST',
+            headers: ajaxHeaders(),
+            contentType: 'application/json',
+            data: JSON.stringify({
+                reasonCode: $('#barrierOpenReasonCode').val(),
+                reasonText: $('#barrierOpenReasonText').val()
+            })
+        }).done(function () {
+            showToast('차단기 강제열림 명령을 전송했습니다.', false);
+            bootstrap.Modal.getInstance(document.getElementById('barrierOpenModal')).hide();
+        }).fail(function () {
+            showToast('차단기 강제열림 명령 전송에 실패했습니다.', true);
+        }).always(function () {
+            $btn.prop('disabled', false);
+        });
+    });
+
+    $(document).on('click', '.btn-lpr-reboot', function () {
+        var gateId = $(this).data('gate-id');
+        if (!window.confirm('LPR 카메라를 원격 재부팅하시겠습니까?')) { return; }
+        $.ajax({
+            url: '/api/dashboard/gates/' + gateId + '/lpr/reboot',
+            type: 'POST',
+            headers: ajaxHeaders()
+        }).done(function () {
+            showToast('LPR 재부팅 명령을 전송했습니다.', false);
+        }).fail(function () {
+            showToast('LPR 재부팅 명령 전송에 실패했습니다.', true);
+        });
+    });
+
+    $(document).on('click', '.btn-intercom-call', function () {
+        var gateId = $(this).data('gate-id');
+        $.ajax({
+            url: '/api/dashboard/gates/' + gateId + '/intercom/call',
+            type: 'POST',
+            headers: ajaxHeaders()
+        }).done(function () {
+            showToast('현장 인터폰 통화를 연결합니다.', false);
+        }).fail(function () {
+            showToast('통화 연결에 실패했습니다.', true);
+        });
+    });
+
+    $(document).on('click', '.btn-manual-payment', function () {
+        $('#manualPaymentGateId').val($(this).data('gate-id'));
+        $('#manualPaymentForm')[0].reset();
+        bootstrap.Modal.getOrCreateInstance('#manualPaymentModal').show();
+    });
+
+    $('#manualPaymentForm').on('submit', function (e) {
+        e.preventDefault();
+        var gateId = $('#manualPaymentGateId').val();
+        var $btn = $(this).find('button[type="submit"]').prop('disabled', true);
+        $.ajax({
+            url: '/api/dashboard/gates/' + gateId + '/manual-payment',
+            type: 'POST',
+            headers: ajaxHeaders(),
+            contentType: 'application/json',
+            data: JSON.stringify({
+                recordId: Number($('#manualPaymentRecordId').val()),
+                amount: Number($('#manualPaymentAmount').val()),
+                reasonCode: $('#manualPaymentReasonCode').val(),
+                reasonText: $('#manualPaymentReasonText').val()
+            })
+        }).done(function () {
+            showToast('요금 수동수납 처리가 완료되었습니다.', false);
+            bootstrap.Modal.getInstance(document.getElementById('manualPaymentModal')).hide();
+        }).fail(function () {
+            showToast('요금 수동수납 처리에 실패했습니다.', true);
+        }).always(function () {
+            $btn.prop('disabled', false);
+        });
+    });
+
+    // ----- WebSocket(STOMP) 구독 -----
+    function connectWebSocket() {
+        var socket = new SockJS('/ws/dashboard');
+        var client = new StompJs.Client({
+            webSocketFactory: function () { return socket; },
+            reconnectDelay: 5000
+        });
+        client.onConnect = function () {
+            client.subscribe('/topic/dashboard/kpi', function (msg) {
+                renderKpi(JSON.parse(msg.body));
+            });
+            client.subscribe('/topic/dashboard/gates', function (msg) {
+                updateGateCard(JSON.parse(msg.body));
+            });
+            client.subscribe('/topic/dashboard/events', function (msg) {
+                prependEvent(JSON.parse(msg.body));
+            });
+            client.subscribe('/topic/dashboard/alerts', function (msg) {
+                showAlert(JSON.parse(msg.body));
+            });
+        };
+        client.activate();
+    }
+
+    // ----- 초기 로드 -----
+    loadKpi();
+    loadGates();
+    loadEvents();
+    loadTraffic();
+    connectWebSocket();
+});
+</script>
+</body>
+</html>

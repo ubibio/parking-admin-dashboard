@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>매출정산 - 주차관리 대시보드</title>
+    <meta name="_csrf" th:content="${_csrf.token}"/>
+    <meta name="_csrf_header" th:content="${_csrf.headerName}"/>
+    <th:block th:replace="~{fragments/layout :: styles}"></th:block>
+    <style>
+        .kpi-card { border: 0; border-radius: .5rem; box-shadow: 0 .125rem .5rem rgba(0,0,0,.06); }
+        .kpi-card .kpi-label { font-size: .85rem; color: #6c757d; }
+        .kpi-card .kpi-value { font-size: 1.6rem; font-weight: 700; }
+        #revenueDetailTable { font-size: .9rem; }
+        #storeSettlementTable { font-size: .9rem; }
+        @media (min-width: 1024px) {
+            .kpi-value { font-size: 1.8rem; }
+        }
+    </style>
+</head>
+<body>
+<nav th:replace="~{fragments/layout :: topbar(activeMenu='revenue')}"></nav>
+
+<main class="container-fluid px-3 px-md-4 py-4" id="revenueRoot">
+
+    <nav aria-label="breadcrumb" class="mb-3">
+        <ol class="breadcrumb mb-0 small">
+            <li class="breadcrumb-item">Home</li>
+            <li class="breadcrumb-item">매출/정산</li>
+            <li class="breadcrumb-item active" aria-current="page">매출 통계 및 정산</li>
+        </ol>
+    </nav>
+
+    <!-- 조회 조건 -->
+    <section class="card mb-3">
+        <div class="card-body">
+            <form id="searchForm" class="row g-3 align-items-end">
+                <div class="col-12 col-md-auto">
+                    <label class="form-label d-block">조회 구분</label>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="periodType" id="periodTypeDaily" value="DAILY" checked>
+                        <label class="form-check-label" for="periodTypeDaily">일별</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="periodType" id="periodTypeMonthly" value="MONTHLY">
+                        <label class="form-check-label" for="periodTypeMonthly">월별</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="periodType" id="periodTypeYearly" value="YEARLY">
+                        <label class="form-check-label" for="periodTypeYearly">년별</label>
+                    </div>
+                </div>
+                <div class="col-6 col-md-3">
+                    <label for="fromDate" class="form-label">조회 기간(시작)</label>
+                    <input type="date" class="form-control" id="fromDate">
+                </div>
+                <div class="col-6 col-md-3">
+                    <label for="toDate" class="form-label">조회 기간(종료)</label>
+                    <input type="date" class="form-control" id="toDate">
+                </div>
+                <div class="col-12 col-md-auto">
+                    <button type="submit" class="btn btn-primary">조회</button>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <!-- 매출 요약 카드 -->
+    <section class="mb-4">
+        <h6 class="text-muted mb-2">매출 요약</h6>
+        <div class="row row-cols-1 row-cols-md-2 row-cols-lg-4 g-3">
+            <div class="col">
+                <div class="card kpi-card h-100">
+                    <div class="card-body">
+                        <div class="kpi-label">총 발생 요금</div>
+                        <div class="kpi-value"><span id="summaryTotalFee">-</span> 원</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card kpi-card h-100">
+                    <div class="card-body">
+                        <div class="kpi-label">총 할인 금액</div>
+                        <div class="kpi-value"><span id="summaryTotalDiscount">-</span> 원</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card kpi-card h-100">
+                    <div class="card-body">
+                        <div class="kpi-label">실 결제 금액</div>
+                        <div class="kpi-value"><span id="summaryNetPaid">-</span> 원</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col">
+                <div class="card kpi-card h-100">
+                    <div class="card-body">
+                        <div class="kpi-label">미납 / 환불 금액</div>
+                        <div class="kpi-value"><span id="summaryUnpaid">-</span> 원 / <span id="summaryRefund">-</span> 원</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 상세 정산 내역 -->
+    <section class="card mb-3">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <span id="revenueDetailTitle">일자별 상세 정산 내역</span>
+            <div class="dropdown">
+                <button type="button" class="btn btn-outline-success btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                    엑셀 내보내기
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    <li><a class="dropdown-item" href="#" id="excelDetailBtn">상세 정산 내역</a></li>
+                    <li><a class="dropdown-item" href="#" id="excelRawBtn">원천 데이터</a></li>
+                </ul>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0" id="revenueDetailTable">
+                <thead class="table-light">
+                <tr>
+                    <th id="revenueDetailPeriodHeader">일자</th>
+                    <th>입차수</th>
+                    <th>출차수</th>
+                    <th>정산건수</th>
+                    <th>기본 요금</th>
+                    <th>할인 금액</th>
+                    <th>카드 결제</th>
+                    <th>간편 결제</th>
+                    <th>상세</th>
+                </tr>
+                </thead>
+                <tbody id="revenueDetailTableBody">
+                <tr>
+                    <td colspan="9" class="text-center text-muted py-4">조회 조건을 선택하고 조회 버튼을 눌러주세요.</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- 상가별 정산 -->
+    <section class="card mb-3">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <span>상가별 정산</span>
+            <div class="d-flex align-items-center gap-2">
+                <label for="storeSettlementStoreId" class="form-label mb-0 small text-muted">상가 ID(선택, 최고관리자만 지정 가능)</label>
+                <input type="number" min="1" class="form-control form-control-sm" id="storeSettlementStoreId" style="width: 110px" placeholder="전체">
+                <button type="button" class="btn btn-outline-primary btn-sm" id="storeSettlementSearchBtn">조회</button>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0" id="storeSettlementTable">
+                <thead class="table-light">
+                <tr>
+                    <th>상가명</th>
+                    <th>발급쿠폰수</th>
+                    <th>사용쿠폰수</th>
+                    <th>할인금액</th>
+                    <th>청구금액</th>
+                </tr>
+                </thead>
+                <tbody id="storeSettlementTableBody">
+                <tr>
+                    <td colspan="5" class="text-center text-muted py-4">조회 조건을 선택하고 조회 버튼을 눌러주세요.</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- 결제수단별 상세 모달 -->
+    <div class="modal fade" id="revenueBreakdownModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="revenueBreakdownModalTitle">결제수단별 상세</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+                </div>
+                <div class="modal-body">
+                    <table class="table table-sm mb-0">
+                        <thead class="table-light">
+                        <tr>
+                            <th>결제수단</th>
+                            <th>정산건수</th>
+                            <th>금액</th>
+                        </tr>
+                        </thead>
+                        <tbody id="revenueBreakdownTableBody">
+                        </tbody>
+                    </table>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">닫기</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 처리 결과 토스트 -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1080">
+        <div id="revenueToast" class="toast align-items-center text-white border-0" role="alert">
+            <div class="d-flex">
+                <div class="toast-body" id="revenueToastBody"></div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="닫기"></button>
+            </div>
+        </div>
+    </div>
+</main>
+
+<th:block th:replace="~{fragments/layout :: scripts}"></th:block>
+<script>
+$(function () {
+    'use strict';
+
+    var periodHeaderLabel = { DAILY: '일자', MONTHLY: '월', YEARLY: '년' };
+    var paymentMethodLabel = { CARD: '신용카드', EASY_PAY: '간편결제' };
+
+    function numberFormat(n) {
+        if (n === null || n === undefined) { return '-'; }
+        return Number(n).toLocaleString('ko-KR');
+    }
+
+    function showToast(message, isError) {
+        var $toast = $('#revenueToast');
+        $toast.removeClass('bg-success bg-danger').addClass(isError ? 'bg-danger' : 'bg-success');
+        $('#revenueToastBody').text(message);
+        var toast = bootstrap.Toast.getOrCreateInstance($toast[0], { delay: 3500 });
+        toast.show();
+    }
+
+    // ----- 조회 조건 -----
+    function pad2(n) { return String(n).padStart(2, '0'); }
+
+    function todayStr() {
+        var d = new Date();
+        return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    }
+
+    function monthStartStr() {
+        var d = new Date();
+        return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-01';
+    }
+
+    function buildFilterParams() {
+        return {
+            periodType: $('input[name="periodType"]:checked').val(),
+            fromDate: $('#fromDate').val() || null,
+            toDate: $('#toDate').val() || null
+        };
+    }
+
+    // ----- 요약 카드 -----
+    function loadSummary(params) {
+        $.getJSON('/api/revenue/summary', params)
+            .done(function (res) {
+                $('#summaryTotalFee').text(numberFormat(res.totalFeeAmount));
+                $('#summaryTotalDiscount').text(numberFormat(res.totalDiscountAmount));
+                $('#summaryNetPaid').text(numberFormat(res.netPaidAmount));
+                $('#summaryUnpaid').text(numberFormat(res.unpaidAmount));
+                $('#summaryRefund').text(numberFormat(res.refundAmount));
+            })
+            .fail(function () {
+                showToast('매출 요약 조회에 실패했습니다.', true);
+            });
+    }
+
+    // ----- 상세 정산 테이블 -----
+    function rowHtml(item) {
+        var $tr = $('<tr></tr>');
+        $tr.append($('<td></td>').text(item.periodKey));
+        $tr.append($('<td></td>').text(numberFormat(item.entryCount)));
+        $tr.append($('<td></td>').text(numberFormat(item.exitCount)));
+        $tr.append($('<td></td>').text(numberFormat(item.settlementCount)));
+        $tr.append($('<td></td>').text(numberFormat(item.baseFeeAmount) + '원'));
+        $tr.append($('<td></td>').text(numberFormat(item.discountAmount) + '원'));
+        $tr.append($('<td></td>').text(numberFormat(item.cardAmount) + '원'));
+        $tr.append($('<td></td>').text(numberFormat(item.easyPayAmount) + '원'));
+
+        var $detailTd = $('<td></td>');
+        $('<button type="button" class="btn btn-outline-primary btn-sm"></button>')
+            .text('보기')
+            .on('click', function () { openBreakdownModal(item.periodKey); })
+            .appendTo($detailTd);
+        $tr.append($detailTd);
+
+        return $tr;
+    }
+
+    function renderDetailTable(items) {
+        var $tbody = $('#revenueDetailTableBody');
+        $tbody.empty();
+        if (!items || items.length === 0) {
+            $tbody.append('<tr><td colspan="9" class="text-center text-muted py-4">조회 결과가 없습니다.</td></tr>');
+            return;
+        }
+        items.forEach(function (item) {
+            $tbody.append(rowHtml(item));
+        });
+    }
+
+    function loadDetails(params) {
+        $('#revenueDetailPeriodHeader').text(periodHeaderLabel[params.periodType] || '일자');
+        $('#revenueDetailTableBody').html('<tr><td colspan="9" class="text-center text-muted py-4">조회 중...</td></tr>');
+        $.getJSON('/api/revenue/details', params)
+            .done(function (res) {
+                renderDetailTable(res.items);
+            })
+            .fail(function () {
+                $('#revenueDetailTableBody').html('<tr><td colspan="9" class="text-center text-danger py-4">목록을 불러오지 못했습니다.</td></tr>');
+                showToast('상세 정산 내역 조회에 실패했습니다.', true);
+            });
+    }
+
+    function loadData() {
+        var params = buildFilterParams();
+        loadSummary(params);
+        loadDetails(params);
+    }
+
+    $('#searchForm').on('submit', function (e) {
+        e.preventDefault();
+        loadData();
+    });
+
+    // ----- 결제수단별 상세 모달 -----
+    function breakdownRowHtml(row) {
+        var label = paymentMethodLabel[row.paymentMethod] || row.paymentMethod;
+        if (row.easyPayProvider) {
+            label += ' (' + row.easyPayProvider + ')';
+        }
+        var $tr = $('<tr></tr>');
+        $tr.append($('<td></td>').text(label));
+        $tr.append($('<td></td>').text(numberFormat(row.settlementCount)));
+        $tr.append($('<td></td>').text(numberFormat(row.amount) + '원'));
+        return $tr;
+    }
+
+    function openBreakdownModal(periodKey) {
+        $.getJSON('/api/revenue/details/' + encodeURIComponent(periodKey))
+            .done(function (res) {
+                $('#revenueBreakdownModalTitle').text(periodKey + ' 결제수단별 상세');
+                var $tbody = $('#revenueBreakdownTableBody').empty();
+                if (!res.byPaymentMethod || res.byPaymentMethod.length === 0) {
+                    $tbody.append('<tr><td colspan="3" class="text-center text-muted py-3">내역이 없습니다.</td></tr>');
+                } else {
+                    res.byPaymentMethod.forEach(function (row) {
+                        $tbody.append(breakdownRowHtml(row));
+                    });
+                }
+                bootstrap.Modal.getOrCreateInstance('#revenueBreakdownModal').show();
+            })
+            .fail(function () {
+                showToast('결제수단별 상세 조회에 실패했습니다.', true);
+            });
+    }
+
+    // ----- 상가별 정산 -----
+    function storeSettlementRowHtml(item) {
+        var $tr = $('<tr></tr>');
+        $tr.append($('<td></td>').text(item.storeName));
+        $tr.append($('<td></td>').text(numberFormat(item.issuedCouponCount)));
+        $tr.append($('<td></td>').text(numberFormat(item.usedCouponCount)));
+        $tr.append($('<td></td>').text(numberFormat(item.discountAmount) + '원'));
+        $tr.append($('<td></td>').text(numberFormat(item.billingAmount) + '원'));
+        return $tr;
+    }
+
+    function renderStoreSettlementTable(items) {
+        var $tbody = $('#storeSettlementTableBody');
+        $tbody.empty();
+        if (!items || items.length === 0) {
+            $tbody.append('<tr><td colspan="5" class="text-center text-muted py-4">조회 결과가 없습니다.</td></tr>');
+            return;
+        }
+        items.forEach(function (item) {
+            $tbody.append(storeSettlementRowHtml(item));
+        });
+    }
+
+    function loadStoreSettlement() {
+        var params = {
+            fromDate: $('#fromDate').val() || null,
+            toDate: $('#toDate').val() || null
+        };
+        var storeId = $('#storeSettlementStoreId').val();
+        if (storeId) {
+            params.storeId = storeId;
+        }
+        $('#storeSettlementTableBody').html('<tr><td colspan="5" class="text-center text-muted py-4">조회 중...</td></tr>');
+        $.getJSON('/api/revenue/store-settlement', params)
+            .done(function (res) {
+                renderStoreSettlementTable(res.items);
+            })
+            .fail(function () {
+                $('#storeSettlementTableBody').html('<tr><td colspan="5" class="text-center text-danger py-4">목록을 불러오지 못했습니다.</td></tr>');
+                showToast('상가별 정산 조회에 실패했습니다.', true);
+            });
+    }
+
+    $('#storeSettlementSearchBtn').on('click', function () {
+        loadStoreSettlement();
+    });
+
+    // 기존 조회기간(from/to) 재사용: 상단 조회 버튼 클릭 시 상가별 정산도 함께 갱신
+    $('#searchForm').on('submit', function () {
+        loadStoreSettlement();
+    });
+
+    // ----- 엑셀 내보내기 -----
+    function excelDownload(target) {
+        var params = $.extend({ target: target }, buildFilterParams());
+        var cleanParams = {};
+        Object.keys(params).forEach(function (key) {
+            if (params[key] !== null && params[key] !== '') {
+                cleanParams[key] = params[key];
+            }
+        });
+        window.location.href = '/api/revenue/excel?' + $.param(cleanParams);
+    }
+
+    $('#excelDetailBtn').on('click', function (e) {
+        e.preventDefault();
+        excelDownload('DETAIL');
+    });
+
+    $('#excelRawBtn').on('click', function (e) {
+        e.preventDefault();
+        excelDownload('RAW');
+    });
+
+    // ----- 초기 로드 (당월 1일 ~ 오늘, 일별) -----
+    $('#fromDate').val(monthStartStr());
+    $('#toDate').val(todayStr());
+    loadData();
+    loadStoreSettlement();
+});
+</script>
+</body>
+</html>

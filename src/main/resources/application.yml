@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: parking-admin-dashboard
+  datasource:
+    url: jdbc:h2:mem:parkingdb;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+  thymeleaf:
+    cache: false
+
+server:
+  port: 8080
+
+# Screen 1(메인 대시보드) 임시 설정값. 실제 주차면수·임계치 관리 체계는 명세 범위 밖.
+# 근거: brief Constraints "totalSpaceCount는 설정값 임시처리"
+parking:
+  total-space-count: 100
+  alert:
+    barrier-open-too-long-minutes: 5
+    unrecognized-vehicle-window-minutes: 10

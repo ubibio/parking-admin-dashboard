@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="ko" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>입출차관리 - 주차관리 대시보드</title>
+    <meta name="_csrf" th:content="${_csrf.token}"/>
+    <meta name="_csrf_header" th:content="${_csrf.headerName}"/>
+    <th:block th:replace="~{fragments/layout :: styles}"></th:block>
+    <style>
+        #recordTable tbody tr.row-unrecognized { background-color: #f8d7da; }
+        #recordTable { font-size: .9rem; }
+        .record-image-viewer {
+            position: relative;
+            height: 260px;
+            overflow: hidden;
+            border: 1px solid #dee2e6;
+            border-radius: .375rem;
+            background-color: #f1f3f5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .record-image-viewer img {
+            max-width: 100%;
+            max-height: 100%;
+            transition: transform .15s ease;
+            transform-origin: center center;
+        }
+        .record-image-placeholder {
+            color: #adb5bd;
+            font-size: .9rem;
+        }
+        .record-crop-viewer {
+            height: 100px;
+            overflow: hidden;
+            border: 1px solid #dee2e6;
+            border-radius: .375rem;
+            background-color: #f1f3f5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .record-crop-viewer img {
+            max-width: 100%;
+            max-height: 100%;
+        }
+        @media (min-width: 1024px) {
+            .record-image-viewer { height: 320px; }
+        }
+    </style>
+</head>
+<body>
+<nav th:replace="~{fragments/layout :: topbar(activeMenu='inout')}"></nav>
+
+<main class="container-fluid px-3 px-md-4 py-4" id="parkingRecordRoot">
+
+    <nav aria-label="breadcrumb" class="mb-3">
+        <ol class="breadcrumb mb-0 small">
+            <li class="breadcrumb-item">Home</li>
+            <li class="breadcrumb-item">입출차 관리</li>
+            <li class="breadcrumb-item active" aria-current="page">입출차 내역 조회 및 예외 처리</li>
+        </ol>
+    </nav>
+
+    <!-- 검색 필터 -->
+    <section class="card mb-3">
+        <div class="card-body">
+            <form id="searchForm" class="row g-3 align-items-end">
+                <div class="col-12 col-md-3">
+                    <label for="fromDate" class="form-label">기간(시작)</label>
+                    <input type="date" class="form-control" id="fromDate">
+                </div>
+                <div class="col-12 col-md-3">
+                    <label for="toDate" class="form-label">기간(종료)</label>
+                    <input type="date" class="form-control" id="toDate">
+                </div>
+                <div class="col-6 col-md-2">
+                    <label for="filterDirection" class="form-label">구분</label>
+                    <select class="form-select" id="filterDirection">
+                        <option value="">전체</option>
+                        <option value="ENTRY">입차</option>
+                        <option value="EXIT">출차</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-2">
+                    <label for="filterStatus" class="form-label">상태</label>
+                    <select class="form-select" id="filterStatus">
+                        <option value="">전체</option>
+                        <option value="NORMAL">정상</option>
+                        <option value="UNRECOGNIZED">미인식/오류</option>
+                        <option value="SEASON_PASS">정기권</option>
+                        <option value="MANUAL_EXIT">수동출차</option>
+                    </select>
+                </div>
+                <div class="col-8 col-md-2">
+                    <label for="filterVehicleNo" class="form-label">차량번호</label>
+                    <input type="text" class="form-control" id="filterVehicleNo" placeholder="전체 또는 뒤4자리">
+                </div>
+                <div class="col-4 col-md-auto">
+                    <button type="submit" class="btn btn-primary w-100">조회</button>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <!-- 입출차 리스트 -->
+    <section class="card mb-3">
+        <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <span>입출차 리스트 (총 <span id="totalCount">0</span>건)</span>
+            <button type="button" class="btn btn-outline-success btn-sm" id="excelDownloadBtn">엑셀 다운로드</button>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0" id="recordTable">
+                <thead class="table-light">
+                <tr>
+                    <th>No</th>
+                    <th>구분</th>
+                    <th>차량번호</th>
+                    <th>입차일시</th>
+                    <th>출차일시</th>
+                    <th>주차시간</th>
+                    <th>요금</th>
+                    <th>이미지</th>
+                    <th>관리</th>
+                </tr>
+                </thead>
+                <tbody id="recordTableBody">
+                <tr>
+                    <td colspan="9" class="text-center text-muted py-4">조회 조건을 선택하고 조회 버튼을 눌러주세요.</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="card-footer bg-white">
+            <nav aria-label="입출차 리스트 페이지">
+                <ul class="pagination pagination-sm justify-content-center mb-0" id="recordPagination"></ul>
+            </nav>
+        </div>
+    </section>
+
+    <!-- 입출차 상세 / 예외 처리 모달 -->
+    <div class="modal fade" id="recordDetailModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <form id="recordDetailForm">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="recordDetailModalTitle">입출차 상세 / 예외 처리</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="닫기"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="detailRecordId">
+                        <div class="row g-3">
+                            <div class="col-12 col-md-6">
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <span class="form-label mb-0">입차 촬영 이미지</span>
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <button type="button" class="btn btn-outline-secondary" id="imageZoomOutBtn">-</button>
+                                        <button type="button" class="btn btn-outline-secondary" id="imageZoomResetBtn">100%</button>
+                                        <button type="button" class="btn btn-outline-secondary" id="imageZoomInBtn">+</button>
+                                    </div>
+                                </div>
+                                <div class="record-image-viewer mb-2">
+                                    <img id="detailFullImage" src="" alt="입차 촬영 이미지" style="display:none;">
+                                    <span class="record-image-placeholder" id="detailFullImagePlaceholder">이미지 없음</span>
+                                </div>
+                                <div class="form-label mb-1 small text-muted">번호판 확대 이미지</div>
+                                <div class="record-crop-viewer">
+                                    <img id="detailCropImage" src="" alt="번호판 확대 이미지" style="display:none;">
+                                    <span class="record-image-placeholder small" id="detailCropImagePlaceholder">이미지 없음</span>
+                                </div>
+                            </div>
+                            <div class="col-12 col-md-6">
+                                <div class="mb-2 text-muted small" id="detailReadonlyInfo"></div>
+                                <div class="mb-3">
+                                    <label for="detailVehicleNo" class="form-label">차량 번호</label>
+                                    <input type="text" class="form-control" id="detailVehicleNo" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label d-block">차량 종별</label>
+                                    <div class="form-check form-check-inline">
+                                        <input class="form-check-input" type="radio" name="detailVehicleType" id="vehicleTypeGeneral" value="GENERAL">
+                                        <label class="form-check-label" for="vehicleTypeGeneral">일반</label>
+                                    </div>
+                                    <div class="form-check form-check-inline">
+                                        <input class="form-check-input" type="radio" name="detailVehicleType" id="vehicleTypeLight" value="COMPACT">
+                                        <label class="form-check-label" for="vehicleTypeLight">경차</label>
+                                    </div>
+                                    <div class="form-check form-check-inline">
+                                        <input class="form-check-input" type="radio" name="detailVehicleType" id="vehicleTypeEv" value="EV">
+                                        <label class="form-check-label" for="vehicleTypeEv">전기차</label>
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="detailEntryAt" class="form-label">입차 일시 수정</label>
+                                    <input type="datetime-local" class="form-control" id="detailEntryAt" step="1">
+                                </div>
+                                <div class="mb-3">
+                                    <label for="detailReasonCode" class="form-label">사유 선택</label>
+                                    <select class="form-select" id="detailReasonCode" required>
+                                        <option value="">선택하세요</option>
+                                        <option value="PLATE_DAMAGED">번호판 오염/훼손</option>
+                                        <option value="MISREAD">LPR 오인식 보정</option>
+                                        <option value="DISPUTE_ADJUST">요금 분쟁 조정</option>
+                                        <option value="ROUND_TRIP">회차 인정</option>
+                                        <option value="PAY_STATION_FAULT">정산기 장애</option>
+                                        <option value="OTHER">기타</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="detailReasonText" class="form-label">상세 사유</label>
+                                    <textarea class="form-control" id="detailReasonText" rows="2" required></textarea>
+                                </div>
+                                <div class="border rounded p-2 mb-3" id="forceExitFieldset">
+                                    <div class="small text-muted mb-2">강제 출차 처리 시 사용되는 정보</div>
+                                    <div class="row g-2">
+                                        <div class="col-12">
+                                            <label for="forceExitAt" class="form-label small mb-1">출차 일시</label>
+                                            <input type="datetime-local" class="form-control form-control-sm" id="forceExitAt" step="1">
+                                        </div>
+                                        <div class="col-6">
+                                            <label for="forceExitFeeAmount" class="form-label small mb-1">최종 요금</label>
+                                            <input type="number" class="form-control form-control-sm" id="forceExitFeeAmount" min="0">
+                                        </div>
+                                        <div class="col-6">
+                                            <label for="forceExitDiscountAmount" class="form-label small mb-1">할인 금액</label>
+                                            <input type="number" class="form-control form-control-sm" id="forceExitDiscountAmount" min="0">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">닫기</button>
+                        <button type="submit" class="btn btn-primary">저장 및 차량 적용</button>
+                        <button type="button" class="btn btn-danger" id="forceExitBtn">강제 출차 처리</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 처리 결과 토스트 -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1080">
+        <div id="commandToast" class="toast align-items-center text-white border-0" role="alert">
+            <div class="d-flex">
+                <div class="toast-body" id="commandToastBody"></div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="닫기"></button>
+            </div>
+        </div>
+    </div>
+</main>
+
+<th:block th:replace="~{fragments/layout :: scripts}"></th:block>
+<script>
+$(function () {
+    'use strict';
+
+    var csrfHeader = $('meta[name="_csrf_header"]').attr('content');
+    var csrfToken = $('meta[name="_csrf"]').attr('content');
+    var PAGE_SIZE = 20;
+    var currentPage = 0;
+    var imageZoomScale = 1;
+
+    var directionLabel = { ENTRY: '입차', EXIT: '출차' };
+    var statusLabel = { NORMAL: '정상', UNRECOGNIZED: '미인식/오류', SEASON_PASS: '정기권', MANUAL_EXIT: '수동출차' };
+    var vehicleTypeLabel = { GENERAL: '일반', COMPACT: '경차', EV: '전기차' };
+
+    function ajaxHeaders() {
+        var headers = {};
+        if (csrfToken && csrfHeader) {
+            headers[csrfHeader] = csrfToken;
+        }
+        return headers;
+    }
+
+    function numberFormat(n) {
+        if (n === null || n === undefined) { return '-'; }
+        return Number(n).toLocaleString('ko-KR');
+    }
+
+    function formatDateTime(iso) {
+        if (!iso) { return '-'; }
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) { return iso; }
+        var mm = String(d.getMonth() + 1).padStart(2, '0');
+        var dd = String(d.getDate()).padStart(2, '0');
+        var hh = String(d.getHours()).padStart(2, '0');
+        var mi = String(d.getMinutes()).padStart(2, '0');
+        var ss = String(d.getSeconds()).padStart(2, '0');
+        return d.getFullYear() + '-' + mm + '-' + dd + ' ' + hh + ':' + mi + ':' + ss;
+    }
+
+    // datetime-local <-> ISO 변환용 (로컬 타임존 기준, 초 단위 포함)
+    function isoToDatetimeLocal(iso) {
+        if (!iso) { return ''; }
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) { return ''; }
+        var mm = String(d.getMonth() + 1).padStart(2, '0');
+        var dd = String(d.getDate()).padStart(2, '0');
+        var hh = String(d.getHours()).padStart(2, '0');
+        var mi = String(d.getMinutes()).padStart(2, '0');
+        var ss = String(d.getSeconds()).padStart(2, '0');
+        return d.getFullYear() + '-' + mm + '-' + dd + 'T' + hh + ':' + mi + ':' + ss;
+    }
+
+    function datetimeLocalToIso(value) {
+        if (!value) { return null; }
+        var d = new Date(value);
+        if (isNaN(d.getTime())) { return null; }
+        return d.toISOString();
+    }
+
+    function showToast(message, isError) {
+        var $toast = $('#commandToast');
+        $toast.removeClass('bg-success bg-danger').addClass(isError ? 'bg-danger' : 'bg-success');
+        $('#commandToastBody').text(message);
+        var toast = bootstrap.Toast.getOrCreateInstance($toast[0], { delay: 3500 });
+        toast.show();
+    }
+
+    // ----- 검색 조건 -----
+    function buildFilterParams() {
+        return {
+            fromDate: $('#fromDate').val() || null,
+            toDate: $('#toDate').val() || null,
+            direction: $('#filterDirection').val() || null,
+            status: $('#filterStatus').val() || null,
+            vehicleNo: $('#filterVehicleNo').val() || null
+        };
+    }
+
+    // ----- 리스트 조회 -----
+    function rowHtml(item, rowNo) {
+        var isUnrecognized = item.recordStatus === 'UNRECOGNIZED';
+        var $tr = $('<tr></tr>').addClass(isUnrecognized ? 'row-unrecognized' : '');
+        $tr.append($('<td></td>').text(rowNo));
+        $tr.append($('<td></td>').text(directionLabel[item.direction] || item.direction || '-'));
+        $tr.append($('<td></td>').text(item.vehicleNo ? item.vehicleNo : '미인식*'));
+        $tr.append($('<td></td>').text(formatDateTime(item.entryAt)));
+        $tr.append($('<td></td>').text(formatDateTime(item.exitAt)));
+        $tr.append($('<td></td>').text(item.parkingMinutes !== null && item.parkingMinutes !== undefined ? item.parkingMinutes + '분' : '-'));
+        $tr.append($('<td></td>').text(item.feeAmount !== null && item.feeAmount !== undefined ? numberFormat(item.feeAmount) + '원' : '-'));
+
+        var $imageTd = $('<td></td>');
+        if (item.hasImage) {
+            $('<button type="button" class="btn btn-outline-secondary btn-sm"></button>')
+                .text('보기')
+                .on('click', function () { openRecordDetailModal(item.recordId); })
+                .appendTo($imageTd);
+        } else {
+            $imageTd.append($('<span class="text-muted small"></span>').text('-'));
+        }
+        $tr.append($imageTd);
+
+        var $manageTd = $('<td></td>');
+        $('<button type="button" class="btn btn-sm"></button>')
+            .addClass(isUnrecognized ? 'btn-danger' : 'btn-outline-primary')
+            .text(isUnrecognized ? '수정' : '상세')
+            .on('click', function () { openRecordDetailModal(item.recordId); })
+            .appendTo($manageTd);
+        $tr.append($manageTd);
+
+        return $tr;
+    }
+
+    function renderTable(items, page) {
+        var $tbody = $('#recordTableBody');
+        $tbody.empty();
+        if (!items || items.length === 0) {
+            $tbody.append('<tr><td colspan="9" class="text-center text-muted py-4">조회 결과가 없습니다.</td></tr>');
+            return;
+        }
+        items.forEach(function (item, idx) {
+            $tbody.append(rowHtml(item, page * PAGE_SIZE + idx + 1));
+        });
+    }
+
+    function renderPagination(totalCount, page) {
+        var $pagination = $('#recordPagination').empty();
+        var totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+        function pageItem(label, targetPage, disabled, active) {
+            var $li = $('<li class="page-item"></li>');
+            if (disabled) { $li.addClass('disabled'); }
+            if (active) { $li.addClass('active'); }
+            var $link = $('<a class="page-link" href="#"></a>').text(label);
+            if (!disabled && !active) {
+                $link.on('click', function (e) {
+                    e.preventDefault();
+                    currentPage = targetPage;
+                    loadList();
+                });
+            }
+            $li.append($link);
+            return $li;
+        }
+
+        $pagination.append(pageItem('이전', page - 1, page <= 0, false));
+
+        var startPage = Math.max(0, page - 4);
+        var endPage = Math.min(totalPages - 1, startPage + 9);
+        for (var p = startPage; p <= endPage; p++) {
+            $pagination.append(pageItem(p + 1, p, false, p === page));
+        }
+
+        $pagination.append(pageItem('다음', page + 1, page >= totalPages - 1, false));
+    }
+
+    function loadList() {
+        var params = $.extend({ page: currentPage, size: PAGE_SIZE }, buildFilterParams());
+        $('#recordTableBody').html('<tr><td colspan="9" class="text-center text-muted py-4">조회 중...</td></tr>');
+        $.getJSON('/api/parking-records', params)
+            .done(function (res) {
+                $('#totalCount').text(numberFormat(res.totalCount || 0));
+                renderTable(res.items, res.page || 0);
+                renderPagination(res.totalCount || 0, res.page || 0);
+            })
+            .fail(function () {
+                $('#recordTableBody').html('<tr><td colspan="9" class="text-center text-danger py-4">목록을 불러오지 못했습니다.</td></tr>');
+                showToast('입출차 목록 조회에 실패했습니다.', true);
+            });
+    }
+
+    $('#searchForm').on('submit', function (e) {
+        e.preventDefault();
+        currentPage = 0;
+        loadList();
+    });
+
+    // ----- 엑셀 다운로드 -----
+    $('#excelDownloadBtn').on('click', function () {
+        var params = buildFilterParams();
+        // null 값 파라미터 제거
+        var cleanParams = {};
+        Object.keys(params).forEach(function (key) {
+            if (params[key] !== null && params[key] !== '') {
+                cleanParams[key] = params[key];
+            }
+        });
+        window.location.href = '/api/parking-records/excel?' + $.param(cleanParams);
+    });
+
+    // ----- 이미지 확대/축소 -----
+    function resetImageZoom() {
+        imageZoomScale = 1;
+        $('#detailFullImage').css('transform', 'scale(1)');
+        $('#imageZoomResetBtn').text('100%');
+    }
+
+    $('#imageZoomInBtn').on('click', function () {
+        imageZoomScale = Math.min(3, imageZoomScale + 0.25);
+        $('#detailFullImage').css('transform', 'scale(' + imageZoomScale + ')');
+        $('#imageZoomResetBtn').text(Math.round(imageZoomScale * 100) + '%');
+    });
+
+    $('#imageZoomOutBtn').on('click', function () {
+        imageZoomScale = Math.max(0.5, imageZoomScale - 0.25);
+        $('#detailFullImage').css('transform', 'scale(' + imageZoomScale + ')');
+        $('#imageZoomResetBtn').text(Math.round(imageZoomScale * 100) + '%');
+    });
+
+    $('#imageZoomResetBtn').on('click', resetImageZoom);
+
+    function loadDetailImage($img, $placeholder, url) {
+        if (!url) {
+            $img.hide().attr('src', '');
+            $placeholder.show();
+            return;
+        }
+        $img.off('error load').hide();
+        $placeholder.show();
+        $img.on('load', function () {
+            $placeholder.hide();
+            $img.show();
+        }).on('error', function () {
+            // 이미지 서빙 API 미구현 등으로 로드 실패 시 조용히 placeholder 유지
+            $img.hide().attr('src', '');
+            $placeholder.show();
+        }).attr('src', url);
+    }
+
+    // ----- 상세/예외 처리 모달 -----
+    function openRecordDetailModal(recordId) {
+        $.getJSON('/api/parking-records/' + recordId)
+            .done(function (detail) {
+                $('#detailRecordId').val(detail.recordId);
+                $('#recordDetailModalTitle').text(
+                    (statusLabel[detail.recordStatus] || detail.recordStatus) + ' - 입출차 상세 / 예외 처리'
+                );
+
+                resetImageZoom();
+                loadDetailImage($('#detailFullImage'), $('#detailFullImagePlaceholder'), detail.images && detail.images.fullImageUrl);
+                loadDetailImage($('#detailCropImage'), $('#detailCropImagePlaceholder'), detail.images && detail.images.plateCropImageUrl);
+
+                $('#detailReadonlyInfo').html(
+                    '구분: ' + (directionLabel[detail.direction] || detail.direction || '-') +
+                    ' &middot; 주차시간: ' + (detail.parkingMinutes !== null && detail.parkingMinutes !== undefined ? detail.parkingMinutes + '분' : '-') +
+                    ' &middot; 요금: ' + (detail.feeAmount !== null && detail.feeAmount !== undefined ? numberFormat(detail.feeAmount) + '원' : '-') +
+                    ' &middot; 할인: ' + (detail.discountAmount !== null && detail.discountAmount !== undefined ? numberFormat(detail.discountAmount) + '원' : '-') +
+                    ' &middot; 정산상태: ' + (detail.settlementStatus || '-')
+                );
+
+                $('#detailVehicleNo').val(detail.vehicleNo || '');
+                $('input[name="detailVehicleType"]').prop('checked', false);
+                $('input[name="detailVehicleType"][value="' + (detail.vehicleType || 'GENERAL') + '"]').prop('checked', true);
+                $('#detailEntryAt').val(isoToDatetimeLocal(detail.entryAt));
+                $('#detailReasonCode').val('');
+                $('#detailReasonText').val('');
+
+                var alreadyExited = !!detail.exitAt;
+                $('#forceExitBtn').toggle(!alreadyExited);
+                $('#forceExitFieldset').toggle(!alreadyExited);
+                if (!alreadyExited) {
+                    $('#forceExitAt').val(isoToDatetimeLocal(new Date().toISOString()));
+                    $('#forceExitFeeAmount').val(detail.feeAmount || 0);
+                    $('#forceExitDiscountAmount').val(detail.discountAmount || 0);
+                }
+
+                bootstrap.Modal.getOrCreateInstance('#recordDetailModal').show();
+            })
+            .fail(function () {
+                showToast('입출차 상세 정보를 불러오지 못했습니다.', true);
+            });
+    }
+
+    function validateReason() {
+        if (!$('#detailReasonCode').val() || !$('#detailReasonText').val()) {
+            showToast('사유(선택/상세)는 필수 입력 항목입니다.', true);
+            return false;
+        }
+        return true;
+    }
+
+    // 번호판 수동 보정 저장 (PUT)
+    $('#recordDetailForm').on('submit', function (e) {
+        e.preventDefault();
+        if (!validateReason()) { return; }
+
+        var recordId = $('#detailRecordId').val();
+        var $btn = $(this).find('button[type="submit"]').prop('disabled', true);
+
+        $.ajax({
+            url: '/api/parking-records/' + recordId + '/plate-correction',
+            type: 'PUT',
+            headers: ajaxHeaders(),
+            contentType: 'application/json',
+            data: JSON.stringify({
+                vehicleNo: $('#detailVehicleNo').val(),
+                vehicleType: $('input[name="detailVehicleType"]:checked').val(),
+                entryAt: datetimeLocalToIso($('#detailEntryAt').val()),
+                reasonCode: $('#detailReasonCode').val(),
+                reasonText: $('#detailReasonText').val()
+            })
+        }).done(function () {
+            showToast('차량 정보가 저장되었습니다.', false);
+            bootstrap.Modal.getInstance(document.getElementById('recordDetailModal')).hide();
+            loadList();
+        }).fail(function () {
+            showToast('저장에 실패했습니다.', true);
+        }).always(function () {
+            $btn.prop('disabled', false);
+        });
+    });
+
+    // 강제 출차 처리 (POST)
+    $('#forceExitBtn').on('click', function () {
+        if (!validateReason()) { return; }
+
+        var recordId = $('#detailRecordId').val();
+        var $btn = $(this).prop('disabled', true);
+
+        $.ajax({
+            url: '/api/parking-records/' + recordId + '/force-exit',
+            type: 'POST',
+            headers: ajaxHeaders(),
+            contentType: 'application/json',
+            data: JSON.stringify({
+                exitAt: datetimeLocalToIso($('#forceExitAt').val()),
+                feeAmount: Number($('#forceExitFeeAmount').val()),
+                discountAmount: Number($('#forceExitDiscountAmount').val()),
+                reasonCode: $('#detailReasonCode').val(),
+                reasonText: $('#detailReasonText').val()
+            })
+        }).done(function () {
+            showToast('강제 출차 처리가 완료되었습니다.', false);
+            bootstrap.Modal.getInstance(document.getElementById('recordDetailModal')).hide();
+            loadList();
+        }).fail(function () {
+            showToast('강제 출차 처리에 실패했습니다.', true);
+        }).always(function () {
+            $btn.prop('disabled', false);
+        });
+    });
+
+    // ----- 초기 로드 -----
+    loadList();
+});
+</script>
+</body>
+</html>
