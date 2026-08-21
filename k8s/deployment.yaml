@@ -19,13 +19,20 @@ spec:
           image: 192.168.45.91:31114/parking-admin-dashboard:9
           ports:
             - containerPort: 8080
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1024Mi"
           startupProbe:
             httpGet:
               path: /
               port: 8080
             initialDelaySeconds: 60
             periodSeconds: 15
-            failureThreshold: 20
+            failureThreshold: 60
           readinessProbe:
             httpGet:
               path: /
